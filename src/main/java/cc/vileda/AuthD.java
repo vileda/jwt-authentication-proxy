@@ -10,17 +10,19 @@ import io.vertx.ext.auth.jwt.JWTOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
+import io.vertx.ext.web.handler.JWTAuthHandler;
+import io.vertx.ext.web.handler.impl.BodyHandlerImpl;
 import org.apache.commons.lang3.StringUtils;
 
 
-public class AuthD {
+class AuthD {
 
 	private final Vertx vertx;
 	private final String remoteHost;
 	private final String keystoreSecret;
 
 	public static void main(String[] args) throws Exception {
-		Vertx vertx = Vertx.vertx();
+		final Vertx vertx = Vertx.vertx();
 
 		if (args.length != 2) {
 			System.err.println("<remote_host:port> <keystore_secret>");
@@ -33,7 +35,7 @@ public class AuthD {
 		new AuthD(vertx, remoteHost, keystoreSecret).run();
 	}
 
-	public AuthD(Vertx vertx, String remoteHost, String keystoreSecret) {
+	private AuthD(final Vertx vertx, final String remoteHost, final String keystoreSecret) {
 
 		this.vertx = vertx;
 		this.remoteHost = remoteHost;
@@ -41,99 +43,69 @@ public class AuthD {
 	}
 
 	private void run() {
-		HttpServer server = vertx.createHttpServer();
+		final HttpServer server = vertx.createHttpServer();
 
-		Router router = createRouter();
+		final Router router = createRouter();
+		final Router loginRouter = createRouter();
 
-		JWTAuth provider = getJwtAuth();
+		final JWTAuth authProvider = getJwtAuth();
 
-		createRoutes(router, provider);
+		loginRouter.route().handler(BodyHandler.create());
+		loginRouter.route().handler(getLoginHandler(authProvider));
+
+		router.mountSubRouter("/login", loginRouter);
+
+		router.route("/*").handler(handleSecuredRoutes(authProvider));
 
 		server.requestHandler(router::accept).listen(8080);
 	}
 
-	private void createRoutes(final Router router, final JWTAuth provider) {
-		router.postWithRegex("^/login$").handler(getLoginHandler(provider));
-		router.route("/*").handler(getProxyHandler(provider));
-	}
-
-	private Router createRouter() {
-		Router router = Router.router(vertx);
-		router.route().handler(BodyHandler.create());
-		return router;
-	}
-
-	private Handler<RoutingContext> getProxyHandler(final JWTAuth provider) {
+	private Handler<RoutingContext> handleSecuredRoutes(final JWTAuth authProvider) {
 		return routingContext -> {
 			final HttpServerResponse response = routingContext.response();
 			final HttpServerRequest request = routingContext.request();
 
-			String jwtToken = extractJwtToken(request);
+			request.bodyHandler(handlerProxyRequest(authProvider, response, request));
+		};
+	}
+
+	private Handler<Buffer> handlerProxyRequest(final JWTAuth authProvider,
+																							final HttpServerResponse response, final HttpServerRequest request) {
+		return buffer -> {
+			final String authorizationHeader = request.getHeader("Authorization");
+			final HttpMethod method = request.method();
+			final String uri = request.uri();
+
+			final String jwtToken = extractJwtToken(authorizationHeader);
 
 			if (jwtToken == null) {
 				response.setStatusCode(412).end("Authorization header not set or incorrect");
 			} else {
-				proxyAuthenticatedRequest(provider, response, request, jwtToken);
+				final JsonObject jsonObject = new JsonObject().put("jwt", jwtToken);
+				authProvider.authenticate(jsonObject, userAsyncResult -> {
+					if (userAsyncResult.succeeded()) {
+						final String username = userAsyncResult.result().principal().getString("username");
+						proxyRequestToRemoteHost(response, buffer, method, uri, username);
+					} else {
+						response.setStatusCode(401).end();
+					}
+				});
 			}
 		};
 	}
 
-	private void proxyAuthenticatedRequest(final JWTAuth provider, final HttpServerResponse response,
-																				 final HttpServerRequest request, final String jwtToken) {
-		final JsonObject jsonObject = new JsonObject().put("jwt", jwtToken);
-		if(response.headWritten()) return;
-		provider.authenticate(jsonObject, userAsyncResult -> {
-			if (userAsyncResult.succeeded()) {
-				System.out.println(userAsyncResult.result().principal().getString("sub"));
-				proxyRequest(response, request);
-			}
-			else response.setStatusCode(401).end();
-		});
-	}
-
-	private void proxyRequest(HttpServerResponse response, HttpServerRequest request) {
-		final String uri = request.uri();
+	private void proxyRequestToRemoteHost(final HttpServerResponse response, final Buffer buffer,
+																				final HttpMethod method, final String uri, final String username) {
 		final HttpClient httpClient = vertx.createHttpClient();
-		request.handler(proxyResponseHandler(response, request, uri, httpClient));
-	}
-
-	private Handler<Buffer> proxyResponseHandler(final HttpServerResponse response, final HttpServerRequest request,
-																							 final String uri, final HttpClient httpClient) {
-		return buffer -> httpClient.requestAbs(request.method(),
-				String.format("http://%s%s", remoteHost, uri),
+		httpClient.requestAbs(method, String.format("http://%s%s", remoteHost, uri),
 				httpClientResponse -> {
 					response.headers().setAll(httpClientResponse.headers());
 					httpClientResponse.bodyHandler(response::end);
-				}).end(buffer);
+				}).putHeader("username", username).end(buffer);
 	}
 
-	private String extractJwtToken(final HttpServerRequest request) {
-		final String authorizationHeader = request.getHeader("Authorization");
-		String[] authorizations = new String[0];
-		if (StringUtils.isNotEmpty(authorizationHeader)) authorizations = authorizationHeader.split(" ");
-		if (authorizations.length != 2) return null;
-		return authorizations[1];
-	}
-
-	private Handler<RoutingContext> getLoginHandler(final JWTAuth provider) {
-		return routingContext -> {
-			final HttpServerResponse response = routingContext.response();
-			final String username = routingContext.request().getFormAttribute("username");
-			final String password = routingContext.request().getFormAttribute("password");
-
-			response.putHeader("content-type", "text/plain");
-			authenticate(provider, response, username, password);
-		};
-	}
-
-	private void authenticate(final JWTAuth provider, final HttpServerResponse response,
-														final String username, final String password) {
-		if ("test".equals(username) && "test".equals(password)) {
-			final String token = provider.generateToken(new JsonObject().put("sub", username), new JWTOptions());
-			response.setStatusCode(200).end(token);
-		} else {
-			response.setStatusCode(401).end();
-		}
+	private Router createRouter() {
+		return Router.router(vertx);
 	}
 
 	private JWTAuth getJwtAuth() {
@@ -143,5 +115,34 @@ public class AuthD {
 				.put("password", keystoreSecret));
 
 		return JWTAuth.create(vertx, config);
+	}
+
+	private Handler<RoutingContext> getLoginHandler(final JWTAuth provider) {
+		return routingContext -> {
+			final HttpServerResponse response = routingContext.response();
+			final HttpServerRequest request = routingContext.request();
+			final String username = request.getFormAttribute("username");
+			final String password = request.getFormAttribute("password");
+
+			response.putHeader("content-type", "text/plain");
+			authenticate(provider, response, username, password);
+		};
+	}
+
+	private void authenticate(final JWTAuth provider, final HttpServerResponse response,
+														final String username, final String password) {
+		if ("test".equals(username) && "test".equals(password)) {
+			final String token = provider.generateToken(new JsonObject().put("username", username), new JWTOptions());
+			response.setStatusCode(200).end(token);
+		} else {
+			response.setStatusCode(401).end();
+		}
+	}
+
+	private String extractJwtToken(final String authorizationHeader) {
+		String[] authorizations = new String[0];
+		if (StringUtils.isNotEmpty(authorizationHeader)) authorizations = authorizationHeader.split(" ");
+		if (authorizations.length != 2) return null;
+		return authorizations[1];
 	}
 }
