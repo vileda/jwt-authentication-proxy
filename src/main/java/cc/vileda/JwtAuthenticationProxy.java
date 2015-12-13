@@ -10,34 +10,35 @@ import io.vertx.ext.auth.jwt.JWTOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
-import io.vertx.ext.web.handler.JWTAuthHandler;
-import io.vertx.ext.web.handler.impl.BodyHandlerImpl;
 import org.apache.commons.lang3.StringUtils;
 
 
-class AuthD {
+class JwtAuthenticationProxy {
 
 	private final Vertx vertx;
+	private final String listenPort;
 	private final String remoteHost;
 	private final String keystoreSecret;
 
 	public static void main(String[] args) throws Exception {
 		final Vertx vertx = Vertx.vertx();
 
-		if (args.length != 2) {
-			System.err.println("<remote_host:port> <keystore_secret>");
+		if (args.length != 3) {
+			System.err.println("<listen_port> <remote_host:port> <keystore_secret>");
 			return;
 		}
 
-		final String remoteHost = args[0];
-		final String keystoreSecret = args[1];
+		final String listenPort = args[0];
+		final String remoteHost = args[1];
+		final String keystoreSecret = args[2];
 
-		new AuthD(vertx, remoteHost, keystoreSecret).run();
+		new JwtAuthenticationProxy(vertx, listenPort, remoteHost, keystoreSecret).run();
 	}
 
-	private AuthD(final Vertx vertx, final String remoteHost, final String keystoreSecret) {
-
+	private JwtAuthenticationProxy(final Vertx vertx, String listenPort, final String remoteHost, final String keystoreSecret)
+	{
 		this.vertx = vertx;
+		this.listenPort = listenPort;
 		this.remoteHost = remoteHost;
 		this.keystoreSecret = keystoreSecret;
 	}
@@ -57,7 +58,7 @@ class AuthD {
 
 		router.route("/*").handler(handleSecuredRoutes(authProvider));
 
-		server.requestHandler(router::accept).listen(8080);
+		server.requestHandler(router::accept).listen(Integer.parseInt(listenPort));
 	}
 
 	private Handler<RoutingContext> handleSecuredRoutes(final JWTAuth authProvider) {
