@@ -16,6 +16,7 @@ import org.apache.commons.lang3.StringUtils;
 
 class JwtAuthenticationProxy {
 
+	private static final String USERNAME_HEADER = "X-Username";
 	private final Vertx vertx;
 	private final String listenPort;
 	private final String remoteHost;
@@ -110,7 +111,7 @@ class JwtAuthenticationProxy {
 		final MultiMap clientRequestHeaders = httpClientRequest.headers();
 		final String originalHost = clientRequestHeaders.get("Host");
 		clientRequestHeaders.addAll(request.headers());
-		clientRequestHeaders.set("X-Username", username);
+		clientRequestHeaders.set(USERNAME_HEADER, username);
 		if(originalHost != null) {
 			clientRequestHeaders.set("Host", originalHost);
 		}
