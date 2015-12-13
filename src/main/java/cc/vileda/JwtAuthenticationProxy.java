@@ -1,6 +1,7 @@
 package cc.vileda;
 
 import io.vertx.core.Handler;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
@@ -74,8 +75,6 @@ class JwtAuthenticationProxy {
 																							final HttpServerResponse response, final HttpServerRequest request) {
 		return buffer -> {
 			final String authorizationHeader = request.getHeader("Authorization");
-			final HttpMethod method = request.method();
-			final String uri = request.uri();
 
 			final String jwtToken = extractJwtToken(authorizationHeader);
 
@@ -86,8 +85,10 @@ class JwtAuthenticationProxy {
 				authProvider.authenticate(jsonObject, userAsyncResult -> {
 					if (userAsyncResult.succeeded()) {
 						final String username = userAsyncResult.result().principal().getString("username");
-						proxyRequestToRemoteHost(response, buffer, method, uri, username);
+						proxyRequestToRemoteHost(response, request, buffer, username);
 					} else {
+						System.out.println(userAsyncResult.cause().getMessage());
+						userAsyncResult.cause().printStackTrace();
 						response.setStatusCode(401).end();
 					}
 				});
@@ -95,14 +96,25 @@ class JwtAuthenticationProxy {
 		};
 	}
 
-	private void proxyRequestToRemoteHost(final HttpServerResponse response, final Buffer buffer,
-																				final HttpMethod method, final String uri, final String username) {
+	private void proxyRequestToRemoteHost(final HttpServerResponse response, final HttpServerRequest request,
+																				final Buffer buffer, final String username) {
 		final HttpClient httpClient = vertx.createHttpClient();
-		httpClient.requestAbs(method, String.format("http://%s%s", remoteHost, uri),
+		final HttpMethod method = request.method();
+		final String uri = request.uri();
+
+		final HttpClientRequest httpClientRequest = httpClient.requestAbs(method, String.format("http://%s%s", remoteHost, uri),
 				httpClientResponse -> {
 					response.headers().setAll(httpClientResponse.headers());
 					httpClientResponse.bodyHandler(response::end);
-				}).putHeader("username", username).end(buffer);
+				});
+		final MultiMap clientRequestHeaders = httpClientRequest.headers();
+		final String originalHost = clientRequestHeaders.get("Host");
+		clientRequestHeaders.addAll(request.headers());
+		clientRequestHeaders.set("X-Username", username);
+		if(originalHost != null) {
+			clientRequestHeaders.set("Host", originalHost);
+		}
+		httpClientRequest.end(buffer);
 	}
 
 	private Router createRouter() {
