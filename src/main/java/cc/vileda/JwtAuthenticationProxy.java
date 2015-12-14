@@ -50,7 +50,7 @@ class JwtAuthenticationProxy {
 		final HttpServer server = vertx.createHttpServer();
 		final JWTAuth authProvider = getJwtAuth();
 
-		Router router = Router.router(vertx);
+		final Router router = Router.router(vertx);
 
 		router.route().handler(BodyHandler.create());
 		router.routeWithRegex("^((?!/login).)*$").handler(JWTAuthHandler.create(authProvider));
@@ -72,7 +72,7 @@ class JwtAuthenticationProxy {
 		};
 	}
 
-	private Handler<RoutingContext> loginHandler(JWTAuth authProvider) {
+	private Handler<RoutingContext> loginHandler(final JWTAuth authProvider) {
 		return routingContext -> {
 			final HttpServerRequest request = routingContext.request();
 			final HttpServerResponse response = routingContext.response();
