@@ -55,7 +55,25 @@ class JwtAuthenticationProxy {
 		router.route().handler(BodyHandler.create());
 		router.routeWithRegex("^((?!/login).)*$").handler(JWTAuthHandler.create(authProvider));
 
-		router.route("/login").handler(routingContext -> {
+		router.route("/login").handler(loginHandler(authProvider));
+
+		router.route("/*").handler(proxyHandler());
+
+		server.requestHandler(router::accept).listen(Integer.parseInt(listenPort));
+	}
+
+	private Handler<RoutingContext> proxyHandler() {
+		return routingContext -> {
+			final HttpServerRequest request = routingContext.request();
+			final HttpServerResponse response = routingContext.response();
+			final String username = routingContext.user().principal().getString("username");
+			final Buffer body = routingContext.getBody();
+			proxyRequestToRemoteHost(response, request, body, username);
+		};
+	}
+
+	private Handler<RoutingContext> loginHandler(JWTAuth authProvider) {
+		return routingContext -> {
 			final HttpServerRequest request = routingContext.request();
 			final HttpServerResponse response = routingContext.response();
 			final String username = request.getFormAttribute("username");
@@ -67,17 +85,7 @@ class JwtAuthenticationProxy {
 			} else {
 				response.setStatusCode(401).end();
 			}
-		});
-
-		router.route("/*").handler(routingContext -> {
-			final HttpServerRequest request = routingContext.request();
-			final HttpServerResponse response = routingContext.response();
-			final String username = routingContext.user().principal().getString("username");
-			final Buffer body = routingContext.getBody();
-			proxyRequestToRemoteHost(response, request, body, username);
-		});
-
-		server.requestHandler(router::accept).listen(Integer.parseInt(listenPort));
+		};
 	}
 
 	private JWTAuth getJwtAuth() {
