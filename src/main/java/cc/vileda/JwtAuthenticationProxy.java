@@ -8,11 +8,21 @@ import io.vertx.core.http.*;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.jwt.JWTAuth;
 import io.vertx.ext.auth.jwt.JWTOptions;
+import io.vertx.ext.web.Cookie;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.*;
 import io.vertx.ext.web.sstore.LocalSessionStore;
+import io.vertx.ext.web.sstore.SessionStore;
 import org.apache.commons.lang3.StringUtils;
+
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.TemporalField;
+import java.util.Date;
+import java.util.concurrent.TimeUnit;
+
+import static io.vertx.core.http.HttpHeaders.SET_COOKIE;
 
 
 class JwtAuthenticationProxy {
@@ -38,8 +48,7 @@ class JwtAuthenticationProxy {
 		new JwtAuthenticationProxy(vertx, listenPort, remoteHost, keystoreSecret).run();
 	}
 
-	private JwtAuthenticationProxy(final Vertx vertx, String listenPort, final String remoteHost, final String keystoreSecret)
-	{
+	private JwtAuthenticationProxy(final Vertx vertx, String listenPort, final String remoteHost, final String keystoreSecret) {
 		this.vertx = vertx;
 		this.listenPort = listenPort;
 		this.remoteHost = remoteHost;
@@ -53,9 +62,29 @@ class JwtAuthenticationProxy {
 		final Router router = Router.router(vertx);
 
 		router.route().handler(BodyHandler.create());
-		router.routeWithRegex("^((?!/login).)*$").handler(JWTAuthHandler.create(authProvider));
+		router.route().handler(CorsHandler.create("http://localhost:3000").allowCredentials(true));
+		router.route().handler(CookieHandler.create());
 
 		router.route("/login").handler(loginHandler(authProvider));
+
+		router.routeWithRegex("^((?!/login).)*$").handler(routingContext -> {
+			routingContext.cookies().stream()
+					.filter(cookie1 -> "auth".equals(cookie1.getName()))
+					.findFirst().ifPresent(cookie2 -> {
+						if ("auth".equals(cookie2.getName()) && StringUtils.isNotBlank(cookie2.getValue())) {
+							routingContext.request().headers()
+									.add("Authorization", "Bearer " + cookie2.getValue());
+						}
+					});
+			JWTAuthHandler.create(authProvider).handle(routingContext);
+		});
+
+		router.route("/logout").handler(routingContext -> {
+			Cookie cookie = Cookie.cookie("auth", "");
+			cookie.setMaxAge(TimeUnit.DAYS.toSeconds(-1));
+			routingContext.addCookie(cookie);
+			routingContext.response().end("Bye!");
+		});
 
 		router.route("/*").handler(proxyHandler());
 
@@ -81,6 +110,10 @@ class JwtAuthenticationProxy {
 
 			if ("test".equals(username) && "test".equals(password)) {
 				final String token = authProvider.generateToken(new JsonObject().put("username", username), new JWTOptions());
+				Cookie cookie = Cookie.cookie("auth", token);
+				cookie.setMaxAge(TimeUnit.HOURS.toSeconds(12));
+				cookie.setHttpOnly(true);
+				routingContext.addCookie(cookie);
 				response.setStatusCode(200).end(token);
 			} else {
 				response.setStatusCode(401).end();
@@ -105,7 +138,9 @@ class JwtAuthenticationProxy {
 
 		final HttpClientRequest httpClientRequest = httpClient.requestAbs(method, String.format("http://%s%s", remoteHost, uri),
 				httpClientResponse -> {
-					response.headers().setAll(httpClientResponse.headers());
+					final MultiMap headers = httpClientResponse.headers();
+					headers.remove("Access-Control-Allow-Origin");
+					response.headers().addAll(headers);
 					httpClientResponse.bodyHandler(response::end);
 				});
 
@@ -114,7 +149,7 @@ class JwtAuthenticationProxy {
 		clientRequestHeaders.addAll(request.headers());
 		clientRequestHeaders.set(USERNAME_HEADER, username);
 
-		if(originalHost != null) {
+		if (originalHost != null) {
 			clientRequestHeaders.set("Host", originalHost);
 		}
 
